@@ -1,0 +1,342 @@
+---
+title: "Homework Assignment 3"
+author: "Kristof Menyhert"
+date: '2018-02-11'
+output:
+  pdf_document: default
+  html_notebook:
+    df_print: paged
+  html_document:
+    df_print: paged
+subtitle: Data Science and Machine Learning 1 - CEU 2018
+---
+
+```{r, message=FALSE, warning= FALSE}
+library(data.table)
+library(datasets)
+library(MASS)
+library(ISLR)
+library(caret)
+library(ggplot2)
+library(NbClust)
+library(factoextra)
+
+theme_set(theme_bw()) #globally set ggplot theme to black & white
+```
+
+## 1. PCA for supervised learning
+In this problem you are going to analyze the Boston dataset from the MASS package (read more about the data here). The goal will be to predict the variable crim which is the crime rate.
+
+```{r}
+data <- data.table(Boston)
+```
+#### a) Do a short exploration of data and find possible predictors of the target variable.
+
+<strong> VARIABLE: RAD - index of accessibility to radial highways: </strong>
+```{r}
+ggplot(data, aes(x=as.factor(rad), y=crim)) +
+  geom_boxplot()
+```
+
+It seems like there is an extreme value, namely rad 24 which is contributing to the per capita crime rate.
+
+<strong> VARIABLE: LSTAT - % lower status of the population: </strong>
+
+```{r, message=FALSE, warning= FALSE}
+ggplot(data, aes(x=lstat, y=crim)) +
+  geom_point() + 
+  geom_smooth()
+```
+
+Seems like the higher the ratio of the lower status of the population in a given area indicating higher crime rate per capita on average.
+
+<strong> VARIABLE: MEDV - Median value of owner-occupied homes in $1000's: </strong>
+
+```{r, message=FALSE, warning= FALSE}
+ggplot(data, aes(x=medv, y=crim)) +
+  geom_point() +
+  geom_smooth()
+```
+
+Seems like under 20.000$s crime rate per capita is negatively correlated with this variable.
+
+<strong> VARIABLE: B - 1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town: </strong>
+```{r, message=FALSE, warning= FALSE}
+ggplot(data, aes(x=black, y=crim)) +
+  geom_point() +
+  geom_smooth()
+```
+
+#### b) Create a training and a test set of 50%.
+
+Cutting the data into two parts:
+
+```{r}
+set.seed(1234)
+cut <- createDataPartition(y = data$crim, times = 1, p = 0.5, list = FALSE)
+
+data_train <- data[cut, ]
+
+data_test <- data[-cut, ]
+
+# check the cut
+length(data$crim) == (length(data_train$crim) + length(data_test$crim))
+```
+
+
+#### c) Use a linear regression to predict crim and use 10-fold cross validation to assess the predictive power.
+
+<strong> LM model </strong> with all variables:
+```{r}
+set.seed(1234)
+lm_model <- train(crim ~ .,
+                   method = "lm",
+                   data = data_train,
+                   trControl = trainControl(method = "cv", number = 10),
+                  preProcess = c("center", "scale"))
+```
+
+```{r}
+lm_model
+```
+
+#### d) Try to improve the model by using PCA for dimensionality reduction. Center and scale your variables and use pcr to conduct a search for the optimal number of principal components. Does PCA improve the fit over the simple linear model?
+
+```{r}
+tune_grid <- data.frame(ncomp = 1:10)
+set.seed(1234)
+pcr_fit <- train(crim ~ . , 
+                data = data_train, 
+                method = "pcr", 
+                trControl = trainControl(method = "cv", number = 10),
+                tuneGrid = tune_grid,
+                preProcess = c("center", "scale"))
+pcr_fit
+```
+
+The best model using PCA is almost as good as without using it.
+
+#### e) Use penalized linear models for the same task. Make sure to include lasso (alpha = 0) to your tune grid. How does the best model compare to that found in d)? Would pre-processing via PCA help this model? (add pca to preProcess). Why do you think the answer can be expected?
+
+```{r}
+# lasso model
+tune_grid <- expand.grid("alpha" = c(0), # lasso, allows to be 0 ridge just shring to near 0
+                             "lambda" = c(0.3, 0.1, 0.01, 0.001, 0.0001))
+
+set.seed(1234)
+lasso_fit <- train(crim ~ ., 
+                   data = data_train, 
+                   method = "glmnet", 
+                   preProcess = c("center", "scale", "pca"), # to normailize
+                   tuneGrid = tune_grid,
+                   trControl = trainControl(method = "cv",
+                                            number = 10,
+                                            preProcOptions = list(thresh=0.65)))
+
+lasso_fit
+```
+
+I tried out several threshold and managed to get almost the same RMSE than without using lasso, the RMSE difference is small with using the threshold = 0.65.
+
+But actually I got a little bit worst result for the best model with PCA.
+
+Inspect how many columns are regured for the 0.65 threshold:
+
+```{r}
+pre_process <- preProcess(data_train, method = c("center", "scale", "pca"), thresh = 0.65)
+pre_process
+```
+
+PCA needed only 3 variables to capture 65% of the variance.
+So we managed to catch almost the same variance with only 3 columns.
+
+#### f) Evaluate your preferred model on the test set.
+
+I am using the lasso model with PCA for predicting the crims variable.
+
+```{r}
+data_test$model_prediction <- predict.train(lasso_fit, newdata = data_test)
+```
+
+Calculate RMSE:
+
+```{r}
+RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2))
+
+RMSE(data_test$model_prediction, data_test$crim)
+
+```
+RMSE is almost the same on the training set compered to the test set. Therefore I consider my model a well fitted one.
+
+See the predicted vs. actual crim on ggplot:
+```{r}
+ggplot(data_test, aes(x=crim, y=model_prediction)) +
+  geom_point() + 
+  geom_abline(slope = 1, linetype = 2)
+```
+
+We get negative values in the predicted crim column which can't be the case. Negative crime rates can't exist.
+
+One additional thing what we can do is to try to predict the log(crim). So I am doing that in the following lines:
+
+```{r}
+
+set.seed(1234)
+lasso_fit_log <- train(log(crim) ~ ., 
+                   data = data_train, 
+                   method = "glmnet", 
+                   preProcess = c("center", "scale", "pca"), # to normailize
+                   tuneGrid = tune_grid,
+                   trControl = trainControl(method = "cv",
+                                            number = 10,
+                                            preProcOptions = list(thresh=0.65)))
+
+lasso_fit_log
+```
+
+Predict to a column:
+
+```{r}
+# on the test data:
+
+data_test$model_prediction_log <- predict.train(lasso_fit_log, newdata = data_test)
+data_test[, log_crim := log(crim)] # create log crim to evaluate and to plot
+```
+
+Evaluate the final model where I predicted the log values:
+
+Define RMSE:
+```{r}
+RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2))
+```
+
+On the test set:
+
+```{r}
+RMSE(data_test$model_prediction_log, data_test$log_crim)
+```
+
+See prediction on a plot:
+```{r}
+ggplot(data_test, aes(x=log_crim, y=model_prediction_log)) +
+  geom_point() +
+  geom_abline(slope = 1, linetype = 2)
+
+#real values:
+ggplot(data_test, aes(x=crim, y=exp(model_prediction_log))) + 
+  geom_point() + 
+  geom_abline(slope = 1, linetype = 2)
+```
+
+I think the log model is a better one (also Rsquared is suggesting that).
+
+## Clustering on the USArrests dataset
+In this problem use the USArrests dataset we used in class. Your task is to apply clustering then make sense of the clusters using the principal components.
+
+Load the data:
+```{r}
+data <- data.table(USArrests)
+```
+
+#### a) Determine the optimal number of clusters as indicated by NbClust heuristics.
+```{r}
+nb <- NbClust(data, method = "kmeans", min.nc = 2, max.nc = 10, index = "all")
+```
+```{r}
+fviz_nbclust(nb)
+```
+
+Optimal number of clusters based on the method showed above - based on the majority rule - are 2 clusters.
+
+#### b) Use the k-means method to cluster states using the number of clusters found in a) and anything else that you think that makes sense. Plot observations colored by clusters in the space of urban population and another (crime-related) variable. (See example code from class, use  factor(km$cluster) to create a vector of class labels).
+
+```{r}
+km <- kmeans(data, centers = 2)
+km
+```
+
+```{r}
+data_clustered <- cbind(data, data.table("cluster" = factor(km$cluster)))
+
+head(data_clustered)
+```
+
+```{r}
+ggplot(data_clustered, aes(x = UrbanPop, y = Assault, color = cluster)) +
+  geom_point(size = 3)
+```
+
+
+#### c) Perform PCA and get the first two principal component coordinates for all observations by
+```{r}
+pca_result <- prcomp(data, scale. = TRUE)
+first_two_pc <- data.table(pca_result$x[, 1:2])
+
+```
+
+#### Plot clusters in the coordinate system defined by the first two principal components. How do clusters relate to these?
+
+Using the same clustering as above but plot the PC1 and the PC2:
+
+```{r}
+data_clustered2 <- cbind(data_clustered, first_two_pc)
+
+ggplot(data_clustered2, aes(x=PC2, y=PC1, color = cluster)) + geom_point(size = 3)
+```
+
+We can see that this method also divided the observations almost just as above just by looking at it with our eyes. Looks like we can conclude something based on the PC1 and PC2 columns if we want to divide our observations into two parts.
+
+#### 3) PCA of high-dimensional data
+
+In this exercise you will perform PCA on 40 observations of 1000 variables. This is very different from what you are used to: there are much more variables than observations! These are measurements of genes of tissues of healthy and diseased patients: the first 20 observations are coming from healthy and the others from diseased patients.
+
+```{r}
+
+data <- fread("C:/Users/Chronos/OneDrive - Central European University/R/machine_learning1/hw3/gene_data.csv")
+
+data[, is_diseased := factor(is_diseased)]
+dim(data)
+tail(names(data))
+```
+
+#### a) Perform PCA on this data with scaling features.
+```{r}
+data_features <- copy(data)
+data_features[, is_diseased := NULL]
+```
+```{r}
+pca_result <- prcomp(data_features, scale. = TRUE)
+first_two_pc <- data.table(pca_result$x[, 1:2])
+
+data_new <- cbind(data, first_two_pc)
+```
+
+```{r}
+ggplot(data_new, aes(x=PC2, y=PC1, color = is_diseased)) + geom_point(size = 3)
+```
+```{r}
+fviz_pca_ind(pca_result, axes = c(1, 2), geom = c("point", "text"), scale = 0)
+```
+
+We can clearly tell that two separate groups have formed. And in one part there are the diseased and in the other there are who are healthy.
+
+```{r}
+table <- data.table(pca_result$rotation, keep.rownames = T)
+```
+
+```{r}
+two_max_value <- sort(abs(table$PC1), decreasing = TRUE)[1:2]
+table[PC1 %in% two_max_value, c(rn, PC1)]
+```
+
+"measure_502" and "measure_589" have the highest values.
+
+Plot these two column from the original data set:
+```{r}
+ggplot(data_new, aes(measure_502, measure_589, color = is_diseased)) + 
+  geom_point(size = 3)
+```
+
+Seems like this two variable are (strongly) correlated with each other. And We can clearly see that we can make a separation based on them. Healthy people are in the bottom left corner and diseased are in the top right corner.
+
+BTW: this PCA method is amazing.
